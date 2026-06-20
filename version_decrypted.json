@@ -1,0 +1,162 @@
+/*
+ * steamtools version.json - decrypted from https://update.tnkjmec.com/version
+ * this is what the stager (xinput1_4.dll / Core.dll) downloads on startup
+ * to figure out where to pull the actual payload and what cdn mirrors to use.
+ *
+ * encryption: AES-256-CBC with 32 byte key at 0x180083FF8 in the stager
+ * compressed with zlib (78da magic) after a 4 byte uncompressed size header
+ * total encrypted size: 656 bytes, decompresses to 1224 bytes of json
+ *
+ * the stager tries 3 version urls in order:
+ *   1. https://update.tnkjmec.com/version   (primary, still alive lol)
+ *   2. http://update.wudrm.com/version      (http only, maybe dead)
+ *   3. http://update.steamcdn.com/version   (i dont even know what to say about this one lmfao)
+ */
+
+{
+  // config version, bump this to force clients to re-download everything
+  "Version": 6,
+
+  // shown in the gui, "正式版" = "official release" in chinese chinchon
+  "VersionTxt": "1.8 正式版",
+
+  // cdn api mirrors, clients pick whichever responds fastest
+  // sg6 is singapore, tnkjmec is their main domain, steamox is a backup
+  "urls": [
+    "https://cdn-api-sg6.tnkjmec.com",
+    "https://cdn-api.tnkjmec.com",
+    "https://cdn-api.steamox.com"
+  ],
+
+  // hash of this file probably, used to detect config changes
+  "Hash": "3f1d281c1a2047fb6858c671c1be9c8f4a494999",
+
+  // their actual website, idk if the stager even uses this
+  "DownloadUrl": "https://www.steamtools.net",
+
+  // the installer is distributed as a pdf file to bypass av scanning
+  // cdn.wmpvp.com is a chinese cdn, the "pdf" is actually the installer
+  // classic chinese software distribution trick, rename exe to pdf so
+  // browsers and AVs dont flag it on download. smart tbh
+  "DownloadZip": "https://cdn.wmpvp.com/steamWeb/B330D5F2F85F4FA784DD92B4D452BBD1-1731878923362.pdf",
+
+  // default appids that come "pre-unlocked". the stager probably injects
+  // these into the local db on first run. mostly free to play games and
+  // some random stuff, these are the games that show up when u first
+  // install steamtools without adding anything manually (i think this is not used on the payload but the code remains there tho).
+  // 242760 = The Forest, 730 = CS2, 440 = TF2, 413150 = Stardew, etc
+  "AppIdInOnline": "242760,1326470,413150,3097560,717690,2737070,2336220,1084600,1203620,632360,1377380,648800,429050,224060,2904000,2543510,550,3892270",
+
+  // "all files" list, seems like a test entry. %USERPROFILE%/test/测试.txt
+  // is literally "test/test.txt" in chinese lol. default=-1 means disabled.
+  // probably left over from development or a debug feature
+  "AllFile": [
+    {
+      "FileName": "%USERPROFILE%/test/测试.txt",
+      "URL": "url",
+      "Hash": "2e4955e5930b6d9159a3d0ffbcd9f885",
+      "default": -1
+    }
+  ],
+
+  // stable channel downloads (windows, 32-bit? the path says 3a but idfk tbh)
+  // these are downloaded when steamtools is running in "stable" mode
+  "WindowsFileStable": [
+    {
+      // <mCode> gets replaced with a hash of appid + cpuid fingerprint
+      // the fingerprint is generated in the stager (HttpLoadDLL function)
+      // format: V{cpuid}_F{family}_M{model}_C{cores} then XOR'd with "version"
+      "FileName": "appcache/httpcache/3a/<mCode>",
+
+      // HID = hardware ID, sends machine fingerprint to their server
+      "URL": "https://update.steamox.com/HID",
+
+      // hash to verify the downloaded file isnt corrupted
+      "Hash": "34e3c7f6709dbc5c762b2024687e83e7",
+
+      // default=1 means "always download this on startup"
+      "default": 1
+    },
+    {
+      // steam.cfg, probably contains cdn urls and other config
+      "FileName": "Steam.cfg",
+      "URL": "https://update.steamox.com/Steam.cfg",
+      "Hash": "d393a5e26d593247c6c4a136e622d302",
+
+      // default=-1 means only download if specifically requested or just disabled, idk
+      "default": -1
+    }
+  ],
+
+  // beta channel (windows 64-bit), for testing new payload versions
+  // probably a "beta" testing version :p?
+  "WindowsFile64Beta": [
+    {
+      // 3b path, different from 3a in stable, so beta and stable
+      // payloads dont collide in the cache
+      "FileName": "appcache/httpcache/3b/<mCode>",
+
+      // CoreBeta = the beta version of the actual unlock core dll lol
+      "URL": "https://update.steamox.com/CoreBeta",
+
+      "Hash": "643d57b90ed2be5df993e6cb726b9cf4",
+      "default": 1
+    }
+  ],
+
+  // this is THE one. stable 64-bit payload. this is what i downloaded and decompiled in Core_payload_decompiled.c
+  "WindowsFile64Stable": [
+    {
+      // saved to appcache/httpcache/3b/<mCode> on disk
+      // the dir structure suggests they cache by hash to avoid
+      // re-downloading the same payload twice
+      "FileName": "appcache/httpcache/3b/<mCode>",
+
+      // this url is still alive as of june 2026, i pulled the
+      // 1.1mb encrypted dll from here, decrypted it with the key
+      // at 0x180083FD8 and got the 2mb decompressed payload
+      "URL": "https://update.tnkjmec.com/Core",
+
+      // this is just the encrypted file hash for integrity checking
+      "Hash": "db638c5f1975ab56c8a648c259ae1a82",
+
+      // default=0 means this is the fallback, the gui probably
+      // sets this to 1 when the user clicks "update" or something
+      "default": 0
+    }
+  ]
+}
+
+// ====================================================================
+// how the stager uses this file
+// ====================================================================
+//
+// 1. stager starts -> calls HttpLoadDLL (sub_1800039B0)
+// 2. generates hardware fingerprint from CPUID:
+//    V{cpuid}_F{family}_M{model}_C{cores}
+// 3. XORs the fingerprint with "version" using a custom CRC
+//    (polynomial 0x85E1C3D753D46D27)
+// 4. tries each url in the hardcoded list until one responds
+//    (tnkjmec -> wudrm -> steamcdn)
+// 5. downloads the encrypted version.json (656 bytes)
+// 6. decrypts with AES-256-CBC + key at 0x180083FF8
+// 7. decompresses zlib (4 byte header with uncompressed size)
+// 8. parses the json to get payload urls
+// 9. downloads the actual Core dll from the matching platform entry
+//    (WindowsFile64Stable[0].URL for stable 64-bit)
+// 10. decrypts with AES-256-CBC + key at 0x180083FD8
+// 11. decompresses zlib
+// 12. loads the resulting PE into memory (or writes to appcache)
+// 13. calls the payload's entry point
+//
+// the <mCode> token in filenames is the SHA256 hash of the
+// hardware fingerprint. this way each machine has its own cache
+// directory and they dont collide if multiple users share a pc.
+//
+// the cdn mirrors (urls array) are used by the payload itself
+// for fetching app lists and manifests. the stager only uses the
+// version endpoint.
+//
+// btw the "steamcdn.com" domain in the stager is NOT a real steam
+// domain lol, its just parked by the steamtools devs. same with
+// "wudrm.com" and "tnkjmec.com". steamox.com is also theirs. (im surprised the steamcdn.com domain is available lmfao)
